@@ -54,8 +54,8 @@ python test.py
 Then the model will detect the images in the `data/input/` and save the results in the `data/output/` directory.
 
 **Note 1: The pretrained weights can be downloaded from:
-[Google Drive](https://drive.google.com/file/d/1wu77Wvytll73EtBptMQViUqS6WE7-yNX/view?usp=sharing) or 
-[Baidu Yun (Code: p3mu)](https://pan.baidu.com/s/1k_Ii8QKupgLUhaPPz5aTsw)**
+[Google Drive](https://drive.google.com/file/d/1scOAVxvqYSfRi4s7s0crk2Ieqn5Cm6r6/view?usp=sharing) or 
+[Baidu Yun (Code: n2ai)](https://pan.baidu.com/s/17W14E3pQLyPia14Kq8QeQg)**
 
 **Note 2: The collected OSN-transmitted dataset can be downloaded from:
 [Google Drive](https://drive.google.com/file/d/1uMNZdhX3bYAZNcVGlkCvrnj5lSLW1ld5/view?usp=sharing) or 
