@@ -2,6 +2,9 @@
 
 An official implementation code for paper "Robust Image Forgery Detection against Transmission over Online Social Networks"
 
+
+**6.26.2022**: :rocket: [Web Demo and Docker image on Replicate](https://replicate.com/highwaywu/image-forgery-detection)
+
 ## Table of Contents
 
 - [Background](#background)
