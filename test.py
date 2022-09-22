@@ -229,8 +229,8 @@ def merge(path, test_size):
         weight_tmp = 1 - weight_tmp
         rtn[-size:, -size:, :] = weight_cur * rtn[-size:, -size:, :] + weight_tmp * img_tmp
         idx += 1
-        rtn[rtn < 127] = 0
-        rtn[rtn >= 127] = 255
+        # rtn[rtn < 127] = 0
+        # rtn[rtn >= 127] = 255
         cv2.imwrite(path_r + file[:-4] + '.png', np.uint8(rtn))
     return path_r
 
