@@ -43,7 +43,6 @@ Furthermore, we build a public forgeries dataset based on four existing datasets
 ## Dependency
 
 - torch 1.6.0
-- tensorflow 1.8.0
 
 ## Usage
 
@@ -55,11 +54,21 @@ Then the model will detect the images in the `data/input/` and save the results 
 
 **Note 1: The pretrained weights can be downloaded from:
 [Google Drive](https://drive.google.com/file/d/1scOAVxvqYSfRi4s7s0crk2Ieqn5Cm6r6/view?usp=sharing) or 
-[Baidu Yun (Code: n2ai)](https://pan.baidu.com/s/17W14E3pQLyPia14Kq8QeQg)**
+[Baidu Pan (Code: n2ai)](https://pan.baidu.com/s/17W14E3pQLyPia14Kq8QeQg)**
 
 **Note 2: The collected OSN-transmitted dataset can be downloaded from:
 [Google Drive](https://drive.google.com/file/d/1uMNZdhX3bYAZNcVGlkCvrnj5lSLW1ld5/view?usp=sharing) or 
-[Baidu Yun (Code: nfsc)](https://pan.baidu.com/s/12DQhLT9AQe3G1my6C4ZJug)**
+[Baidu Pan (Code: nfsc)](https://pan.baidu.com/s/12DQhLT9AQe3G1my6C4ZJug)**
+
+For OSN Noise Modeling:
+```bash
+python osn.py
+```
+
+**Note 3: The pretrained OSN weights (on Facebook data) can be downloaded from:
+[Google Drive](https://drive.google.com/file/d/1jbVCBc4ofj3oASKEOtxEtuAw6cBl8wfv/view?usp=sharing) or 
+[Baidu Pan](https://pan.baidu.com/s/1bMAUTOoOYBx1ZpReskCFpA?pwd=bsun)**
+
 
 ## Citation
 
@@ -101,5 +110,5 @@ If you use this code/dataset for your research, please consider citing the refer
 ```
 
 ## Acknowledgments
-- Part of the network codes are based on the [SCSE-U-Net](https://github.com/maloyan/Roscosmos)
+- Part of the network codes are based on the [SCSE-U-Net](https://github.com/maloyan/Roscosmos) and [DiffJPEG](https://github.com/mlomnitz/DiffJPEG)
 - The [Tianchi Competition](https://tianchi.aliyun.com/competition/entrance/531812/introduction)
