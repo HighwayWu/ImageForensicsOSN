@@ -46,6 +46,12 @@ Furthermore, we build a public forgeries dataset based on four existing datasets
 
 ## Usage
 
+For training:
+```bash
+python train.py
+```
+The data file 'train. npy' should be prepared in advance.
+
 For testing:
 ```bash
 python test.py
