@@ -2,27 +2,70 @@ import os
 import cv2
 import copy
 import shutil
+import random
 import numpy as np
+import albumentations as A
 import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.autograd import Variable
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from sklearn.metrics import roc_auc_score
 from models.scse import SCSEUnet
+from DiffJPEG.DiffJPEG import DiffJPEG
 
 gpu_ids = '0, 1'
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_ids
+image_size = 896
+mean = torch.Tensor(np.array([0.5, 0.5, 0.5])[:, np.newaxis, np.newaxis])
+mean = mean.expand(3, image_size, image_size).cuda()
+std = torch.Tensor(np.array([0.5, 0.5, 0.5])[:, np.newaxis, np.newaxis])
+std = std.expand(3, image_size, image_size).cuda()
 
 
 class MyDataset(Dataset):
-    def __init__(self, test_path='', size=896):
-        self.test_path = test_path
-        self.size = size
-        self.filelist = sorted(os.listdir(self.test_path))
+    def __init__(self, filelist=None, image_size=896, choice='train'):
+        self.choice = choice
+        self.image_size = image_size
+        self.filelist = filelist
         self.transform = transforms.Compose([
             np.float32,
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+        self.albu = A.Compose([
+            A.RandomScale(scale_limit=(-0.5, 0.0), p=0.75),
+            A.PadIfNeeded(min_height=self.image_size, min_width=self.image_size, p=1.0),
+            A.OneOf([
+                A.HorizontalFlip(p=1),
+                A.VerticalFlip(p=1),
+                A.RandomRotate90(p=1),
+                A.Transpose(p=1),
+            ], p=0.75),
+            A.ImageCompression(quality_lower=50, quality_upper=95, p=0.75),
+            A.OneOf([
+                A.OneOf([
+                    A.Blur(p=1),
+                    A.GaussianBlur(p=1),
+                    A.MedianBlur(p=1),
+                    A.MotionBlur(p=1),
+                ], p=1),
+                A.OneOf([
+                    A.Downscale(p=1),
+                    A.GaussNoise(p=1),
+                    A.ISONoise(p=1),
+                    A.RandomBrightnessContrast(p=1),
+                    A.RandomGamma(p=1),
+                    A.RandomToneCurve(p=1),
+                    A.Sharpen(p=1),
+                ], p=1),
+                A.OneOf([
+                    A.ElasticTransform(alpha=120, sigma=120 * 0.05, alpha_affine=120 * 0.03, p=1),
+                    A.GridDistortion(p=1),
+                ], p=1),
+            ], p=0.25),
         ])
 
     def __getitem__(self, idx):
@@ -37,11 +80,24 @@ class MyDataset(Dataset):
         else:
             fname1, fname2 = self.test_path + self.filelist[idx], ''
 
-        img = cv2.imread(fname1)[..., ::-1]
-        H, W, _ = img.shape
-        mask = np.zeros([H, W, 3])
+        try:
+            img = cv2.imread(fname1)[..., ::-1]
+            h, w, _ = img.shape
+            mask = cv2.imread(fname2)
+            mask = cv2.resize(mask, (w, h))
+            mask = thresholding(mask)
+        except:
+            print('Error in reading image [%s] or mask [%s]' % (fname1, fname2))
+            img = np.zeros([self.image_size, self.image_size, 3], dtype=np.uint8)
+            mask = np.zeros([self.image_size, self.image_size, 3], dtype=np.uint8)
+            mask[:10, :10, :] = 255
+            fname1 = 'error.jpg'
 
-        H, W, _ = img.shape
+        if self.choice == 'train' and random.random() < 0.5:
+            aug = self.albu(image=img, mask=mask)
+            img = aug['image']
+            mask = aug['mask']
+
         img = img.astype('float') / 255.
         mask = mask.astype('float') / 255.
         return self.transform(img), self.tensor(mask[:, :, :1]), fname1.split('/')[-1]
@@ -50,26 +106,165 @@ class MyDataset(Dataset):
         return torch.from_numpy(img).float().permute(2, 0, 1)
 
 
+class conv_block(nn.Module):
+    """
+    Convolution Block
+    """
+
+    def __init__(self, in_ch, out_ch):
+        super(conv_block, self).__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True))
+
+    def forward(self, x):
+        x = self.conv(x)
+        return x
+
+
+class up_conv(nn.Module):
+    """
+    Up Convolution Block
+    """
+
+    def __init__(self, in_ch, out_ch):
+        super(up_conv, self).__init__()
+        self.up = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        x = self.up(x)
+        return x
+
+
+# The network used for OSN noise modeling
+class U_Net(nn.Module):
+    """
+    UNet - Basic Implementation
+    Paper : https://arxiv.org/abs/1505.04597
+    """
+
+    def __init__(self, in_ch=3, out_ch=1, isResidual=True, isJPEG=True):
+        super(U_Net, self).__init__()
+        self.name = 'U_Net'
+        self.isResidual = isResidual
+        self.isJPEG = isJPEG
+
+        n1 = 64
+        filters = [n1, n1 * 2, n1 * 4, n1 * 8, n1 * 16]
+
+        self.Maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.Maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.Maxpool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.Maxpool4 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.Conv1 = conv_block(in_ch, filters[0])
+        self.Conv2 = conv_block(filters[0], filters[1])
+        self.Conv3 = conv_block(filters[1], filters[2])
+        self.Conv4 = conv_block(filters[2], filters[3])
+        self.Conv5 = conv_block(filters[3], filters[4])
+
+        self.Up5 = up_conv(filters[4], filters[3])
+        self.Up_conv5 = conv_block(filters[4], filters[3])
+
+        self.Up4 = up_conv(filters[3], filters[2])
+        self.Up_conv4 = conv_block(filters[3], filters[2])
+
+        self.Up3 = up_conv(filters[2], filters[1])
+        self.Up_conv3 = conv_block(filters[2], filters[1])
+
+        self.Up2 = up_conv(filters[1], filters[0])
+        self.Up_conv2 = conv_block(filters[1], filters[0])
+
+        self.Conv = nn.Conv2d(filters[0], out_ch, kernel_size=1, stride=1, padding=0)
+
+        # self.active = torch.nn.Sigmoid()
+        self.active = torch.nn.Tanh()
+
+        if self.isJPEG:
+            self.diff_jpeg = DiffJPEG(height=image_size, width=image_size, differentiable=True)
+
+    def forward(self, x, quality=95):
+        e1 = self.Conv1(x)
+
+        e2 = self.Maxpool1(e1)
+        e2 = self.Conv2(e2)
+
+        e3 = self.Maxpool2(e2)
+        e3 = self.Conv3(e3)
+
+        e4 = self.Maxpool3(e3)
+        e4 = self.Conv4(e4)
+
+        e5 = self.Maxpool4(e4)
+        e5 = self.Conv5(e5)
+
+        d5 = self.Up5(e5)
+        d5 = torch.cat((e4, d5), dim=1)
+        d5 = self.Up_conv5(d5)
+
+        d4 = self.Up4(d5)
+        d4 = torch.cat((e3, d4), dim=1)
+        d4 = self.Up_conv4(d4)
+
+        d3 = self.Up3(d4)
+        d3 = torch.cat((e2, d3), dim=1)
+        d3 = self.Up_conv3(d3)
+
+        d2 = self.Up2(d3)
+        d2 = torch.cat((e1, d2), dim=1)
+        d2 = self.Up_conv2(d2)
+
+        out = self.Conv(d2)
+        if self.isResidual:
+            out = 0.02 * self.active(out) + 0.98 * x
+        else:
+            out = self.active(out)
+        if self.isJPEG:
+            out = self.diff_jpeg((out + 1) / 2, quality=quality)
+            out = (out - 0.5) * 2
+        return out
+
+
 class Detector(nn.Module):
     def __init__(self):
         super(Detector, self).__init__()
         self.name = 'detector'
+        self.osn_net = U_Net(in_ch=3, out_ch=3, isResidual=True, isJPEG=True)
+        try:
+            self.osn_net.load_state_dict(torch.load('weights/OSN_Unet_Residual_JPEG_module/U_Net_weights.pth'))
+        except:
+            print('Please download the pretrained OSN network.')
         self.det_net = SCSEUnet(backbone_arch='senet154', num_channels=3)
 
-    def forward(self, Ii):
-        Mo = self.det_net(Ii)
+    def forward(self, Ii, isOSN=False):
+        if isOSN:
+            Mo = self.osn_net(Ii, quality=95)  # The QF could be randomly sampled from [71, 95]
+        else:
+            Mo = self.det_net(Ii)
         return Mo
 
 
 class Model(nn.Module):
-    def __init__(self):
+    def __init__(self, batch_size=4):
         super(Model, self).__init__()
         self.save_dir = 'weights/'
+        self.batch_size = batch_size
+        self.lr = 1e-4
         self.networks = Detector()
         self.gen = nn.DataParallel(self.networks).cuda()
         self.gen_optimizer = optim.Adam(self.gen.parameters(), lr=self.lr, betas=(0.9, 0.999))
         self.bce_loss = nn.BCELoss()
-        self.global_xi = [torch.zeros([batch_size, 3, int(patch_size), int(patch_size)])]
+        self.global_xi = [torch.zeros([self.batch_size, 3, image_size, image_size])]
 
     def process(self, Ii, Mg, adv=False, eva=False):
         if adv:  # Modeling the noise Tau and Xi
@@ -128,7 +323,7 @@ class Model(nn.Module):
 
 class ForgeryForensics():
     def __init__(self):
-        self.batch_size = 16  # modify according to the resources
+        self.batch_size = 4  # modify according to the resources
 
         self.train_npy = 'train.npy'  # Need to update
         self.train_file = np.load('data/' + self.train_npy)
@@ -147,19 +342,21 @@ class ForgeryForensics():
 
         self.train_num = len(self.train_file)
         self.val_num = len(self.val_file)
-        train_dataset = MyDataset(self.train_num, self.train_file, choice='train')
-        val_dataset = MyDataset(self.val_num, self.val_file, choice='val')
+        train_dataset = MyDataset(self.train_file, image_size=image_size, choice='train')
+        val_dataset = MyDataset(self.val_file, image_size=image_size, choice='val')
 
-        self.model = Model(self.batch_size).cuda()
+        self.model = Model().cuda()
         self.n_epochs = 9999
-        self.train_loader = DataLoader(dataset=train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4,
+        self.train_loader = DataLoader(dataset=train_dataset, batch_size=self.batch_size, shuffle=True,
+                                       num_workers=self.batch_size,
                                        drop_last=True)
-        self.val_loader = DataLoader(dataset=val_dataset, batch_size=2, shuffle=False, num_workers=4)
+        self.val_loader = DataLoader(dataset=val_dataset, batch_size=self.batch_size, shuffle=False,
+                                     num_workers=self.batch_size)
 
     def train(self):
         with open('log_' + gpu_ids[0] + '.txt', 'a+') as f:
             f.write('\nTrain/Val with ' + self.train_npy + '/' + self.val_npy + ' with num %d/%d' % (
-            self.train_num, self.val_num))
+                self.train_num, self.val_num))
         cnt, gen_losses, auc, f1, iou = 0, [], [], [], []
         best_score = 0
         scheduler = ReduceLROnPlateau(self.model.gen_optimizer, patience=6, factor=0.5, mode='max')
@@ -194,14 +391,16 @@ class ForgeryForensics():
                         self.model.save('best_' + gpu_ids[0] + '/')
                     with open('log_' + gpu_ids[0] + '.txt', 'a+') as f:
                         f.write('\n(%5d/%5d): Tra: G:%5.4f AUC:%5.4f F1:%5.4f IOU:%5.4f SUM:%5.4f   ' % (
-                        cnt, self.train_num, np.mean(gen_losses), np.mean(auc), np.mean(f1), np.mean(iou),
-                        np.mean(auc) + np.mean(f1) + np.mean(iou)))
+                            cnt, self.train_num, np.mean(gen_losses), np.mean(auc), np.mean(f1), np.mean(iou),
+                            np.mean(auc) + np.mean(f1) + np.mean(iou)))
                         f.write('Val: G:%5.4f AUC:%5.4f F1:%5.4f IOU:%5.4f SUM:%5.4f ' % (
-                        val_gen_loss, val_auc, val_f1, val_iou, val_auc + val_f1 + val_iou))
+                            val_gen_loss, val_auc, val_f1, val_iou, val_auc + val_f1 + val_iou))
             cnt, gen_losses, auc, f1, iou = 0, [], [], [], []
 
     def val(self):
         self.model.eval()
+        validation_res_path = 'res/validation/'
+        rm_and_make_dir(validation_res_path)
         auc, f1, iou, gen_losses = [], [], [], []
         for cnt, items in enumerate(self.val_loader):
             Ii, Mg = (item.cuda() for item in items[:-1])
@@ -223,7 +422,7 @@ class ForgeryForensics():
                     rtn[:, W * 1 + 10:W * 2 + 10, :] = np.concatenate([Mg[i], Mg[i], Mg[i]], axis=2)
                     rtn[:, W * 2 + 20:W * 3 + 20, :] = np.concatenate(
                         [Mo[i][:, :, 0:1], Mo[i][:, :, 0:1], Mo[i][:, :, 0:1]], axis=2)
-                    cv2.imwrite('res/val_' + gpu_ids[0] + '/' + filename[i], rtn)
+                    cv2.imwrite(validation_res_path + filename[i], rtn)
         return np.mean(gen_losses), np.mean(auc), np.mean(f1), np.mean(iou)
 
     def convert1(self, x):
@@ -427,6 +626,12 @@ def rm_and_make_dir(path):
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path)
+
+
+def thresholding(x, th=0.5):
+    x[x > int(255 * th)] = 255
+    x[x <= int(255 * th)] = 0
+    return x
 
 
 def metric(premask, groundtruth):
