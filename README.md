@@ -1,6 +1,8 @@
 # Image Forensics OSN
 
-**6.26.2022**: :rocket: [Web Demo and Docker image on Replicate](https://replicate.com/highwaywu/image-forgery-detection)
+**2023.8.20**: :rocket: We release a novel and more powerful forgery detection framework [FOCAL](https://github.com/HighwayWu/FOCAL).
+
+**2022.6.26**: [Web Demo and Docker image on Replicate](https://replicate.com/highwaywu/image-forgery-detection)
 
 ## Table of Contents
 
