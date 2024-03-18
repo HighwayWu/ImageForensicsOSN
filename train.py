@@ -241,7 +241,7 @@ class Detector(nn.Module):
         self.name = 'detector'
         self.osn_net = U_Net(in_ch=3, out_ch=3, isResidual=True, isJPEG=True)
         try:
-            self.osn_net.load_state_dict(torch.load('weights/OSN_Unet_Residual_JPEG_module/U_Net_weights.pth'))
+            self.osn_net.load_state_dict(torch.load('weights/OSN_UNet_weights.pth'))
         except:
             print('Please download the pretrained OSN network.')
         self.det_net = SCSEUnet(backbone_arch='senet154', num_channels=3)
